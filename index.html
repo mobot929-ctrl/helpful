@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Taming.io Base Builder</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    #login-overlay {
+      position: fixed; inset: 0; z-index: 9999;
+      background: #0d0d0d;
+      display: flex; align-items: center; justify-content: center;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+    #login-box {
+      background: #1a1a1a; border: 2px solid #333; border-radius: 10px;
+      padding: 36px 40px; width: 340px;
+      display: flex; flex-direction: column; gap: 14px;
+      box-shadow: 0 8px 40px #0009;
+    }
+    #login-box h1 { color: #e8e8e8; font-size: 20px; text-align: center; letter-spacing: 1px; }
+    #login-box p  { color: #888; font-size: 12px; text-align: center; margin-top: -8px; }
+    #login-box label { color: #aaa; font-size: 12px; display: block; margin-bottom: 4px; }
+    #login-box input {
+      width: 100%; background: #111; border: 1px solid #333; border-radius: 5px;
+      color: #eee; padding: 9px 12px; font-size: 14px; outline: none;
+      transition: border 0.15s; box-sizing: border-box;
+    }
+    #login-box input:focus { border-color: #5e7136; }
+    #login-btn {
+      margin-top: 6px; background: #5e7136; color: #fff; border: none;
+      border-radius: 5px; padding: 11px; font-size: 15px; font-weight: bold;
+      cursor: pointer; transition: background 0.15s, transform 0.1s;
+    }
+    #login-btn:hover  { background: #6e8440; transform: scale(1.02); }
+    #login-btn:active { transform: scale(0.98); }
+    #login-error { color: #e05050; font-size: 12px; text-align: center; display: none; }
+    .divider { border: none; border-top: 1px solid #2a2a2a; margin: 0; }
+    .field { display: flex; flex-direction: column; }
+    #status-msg { color: #7aaa50; font-size: 12px; text-align: center; display: none; }
+  </style>
+</head>
+<body>
+
+  <!-- LOGIN SCREEN -->
+  <div id="login-overlay">
+    <div id="login-box">
+      <h1>🏰 Base Builder</h1>
+      <p>Taming.io Template Tool</p>
+      <hr class="divider">
+      <div class="field">
+        <label>Password</label>
+        <input type="password" id="pw-input" placeholder="Enter password…" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>Invite Code</label>
+        <input type="text" id="code-input" placeholder="Enter invite code…" autocomplete="off">
+      </div>
+      <div id="login-error">❌ Wrong password or invite code.</div>
+      <div id="status-msg">🔓 Decrypting…</div>
+      <button id="login-btn">Enter</button>
+    </div>
+  </div>
+
+  <!-- MAIN APP (hidden until decrypted) -->
+  <main id="app" style="display:none; height:100%;">
+    <section id="map" style="cursor: url('mode_img/default-cursor.png') 4 0, default; background: rgb(84,95,51);">
+      <div id="map-in" style="background: rgb(94,113,54);"></div>
+      <img id="map-cursor" src="" style="transform: rotate(0deg); display: none;">
+    </section>
+    <section id="toolbar">
+      <div class="container mode-container"><div id="mode" class="mates"></div></div>
+      <div class="container item-container"><div id="item" class="mates"></div></div>
+      <div class="container color-container"><div id="color" class="mates"></div></div>
+      <div class="container deg-container">
+        <img id="deg-dummy" style="display:none;">
+        <img id="deg-img" src="" style="display:none; transform:rotate(0deg);">
+        <div id="deg" class="mates"></div>
+      </div>
+      <div class="container biome-container"><div id="biome" class="mates"></div></div>
+      <div class="container link-container"><div id="link" class="mates"></div></div>
+      <div id="logo"></div>
+    </section>
+    <section id="tooltip"></section>
+    <canvas id="canvas"></canvas>
+    <canvas id="canvas2"></canvas>
+    <canvas id="canvas3"></canvas>
+    <footer><div id="copyright">your base builder</div></footer>
+  </main>
+
+  <script>
+    // ════════════════════════════════════════════════════
+    //  🔐 CHANGE YOUR PASSWORD AND INVITE CODES HERE
+    //     (must match what was used to encrypt app.enc)
+    // ════════════════════════════════════════════════════
+    const PASSWORD     = "mafijas1fan2026";
+    const INVITE_CODES = ["hippoisgod", "dontcrimifan"];
+    const SALT         = "tamingbuilder_salt";   // do not change this
+    // ════════════════════════════════════════════════════
+
+    async function deriveKey(password) {
+      const enc = new TextEncoder();
+      const keyMaterial = await crypto.subtle.importKey(
+        "raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]
+      );
+      return crypto.subtle.deriveKey(
+        { name: "PBKDF2", salt: enc.encode(SALT), iterations: 100000, hash: "SHA-256" },
+        keyMaterial,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["decrypt"]
+      );
+    }
+
+    function b64ToBytes(b64) {
+      return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    }
+
+    async function decryptAndRun(password) {
+      const resp = await fetch("app.enc?nocache=" + Date.now());
+      const payload = await resp.json();
+      const key = await deriveKey(password);
+      const iv  = b64ToBytes(payload.iv);
+      const tag = b64ToBytes(payload.tag);
+      const encBytes = b64ToBytes(payload.data);
+
+      // Combine encrypted data + GCM auth tag (Web Crypto expects them joined)
+      const combined = new Uint8Array(encBytes.length + tag.length);
+      combined.set(encBytes);
+      combined.set(tag, encBytes.length);
+
+      let decrypted;
+      try {
+        const decBuf = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv, tagLength: 128 }, key, combined
+        );
+        decrypted = new TextDecoder().decode(decBuf);
+      } catch (e) {
+  console.error(e);
+  return false;
+}
+
+      // Execute the decrypted code in memory — never written to disk
+      const blob = new Blob([decrypted], { type: "application/javascript" });
+      const url  = URL.createObjectURL(blob);
+      const s    = document.createElement("script");
+      s.src      = url;
+      s.onload   = () => URL.revokeObjectURL(url); // immediately destroy the blob URL
+      document.body.appendChild(s);
+      return true;
+    }
+
+    function showApp() {
+      document.getElementById("login-overlay").style.display = "none";
+      document.getElementById("app").style.display = "";
+    }
+
+    document.getElementById("login-btn").addEventListener("click", tryLogin);
+    document.getElementById("pw-input").addEventListener("keydown",   e => e.key==="Enter" && tryLogin());
+    document.getElementById("code-input").addEventListener("keydown", e => e.key==="Enter" && tryLogin());
+
+    async function tryLogin() {
+      const pw   = document.getElementById("pw-input").value.trim();
+      const code = document.getElementById("code-input").value.trim();
+      const errEl = document.getElementById("login-error");
+      const statusEl = document.getElementById("status-msg");
+
+
+      if (pw !== PASSWORD || !INVITE_CODES.includes(code)) {
+        errEl.style.display = "block";
+        statusEl.style.display = "none";
+        document.getElementById("pw-input").value = "";
+        document.getElementById("code-input").value = "";
+        document.getElementById("pw-input").focus();
+        return;
+      }
+
+      errEl.style.display = "none";
+      statusEl.style.display = "block";
+      document.getElementById("login-btn").disabled = true;
+
+      const ok = await decryptAndRun(pw);
+      if (ok) {
+        showApp();
+      } else {
+        statusEl.style.display = "none";
+        errEl.textContent = "❌ Decryption failed.";
+        errEl.style.display = "block";
+        document.getElementById("login-btn").disabled = false;
+      }
+    }
+  </script>
+</body>
+</html>
